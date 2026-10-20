@@ -9,7 +9,7 @@ class ConnectionConfigTest {
     @Test
     fun defaultHost_isValid() {
         val config = ConnectionConfig()
-        assertEquals("192.168.1.38", config.host)
+        assertEquals("192.168.1.46", config.host)
         assertTrue(config.isValid)
         assertNull(config.validate())
     }

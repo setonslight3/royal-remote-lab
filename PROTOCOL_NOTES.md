@@ -4,66 +4,98 @@
 **Firmware Version:** `v8-nt671la-lf1v680.000`  
 **UI Version:** `u_1.0.129.46 0906`  
 **Kernel:** `4.9.118+`  
-**Configured Local IP:** `192.168.1.38`  
+**Current Local IP:** `192.168.1.46` (previously `192.168.1.38`)  
 **Last Updated:** 2026-10-20  
 
 ---
 
-## 1. Empirical Test Results on 192.168.1.38
+## 1. Empirical Test Results on 192.168.1.46
 
-During physical Wi-Fi testing against the Royal RTV65D8100 TV at `192.168.1.38`:
-1. **TCP Port 80 (HTTP):** **CONNECTION REFUSED (`ECONNREFUSED`)**  
-   - The TV does not expose a standard unauthenticated web interface on port 80.
-2. **TCP Port 8088 (Default UPnP DMR):** **CONNECTION REFUSED (`ECONNREFUSED`)**  
-   - Port 8088 is frequently used by some TV vendors (e.g. older Samsung/LG), but is **not** the listening port for this Novatek NT671LA chassis.
-3. **TCP Port 56789 (Vestel Smart Center):** **CONNECTION REFUSED (`ECONNREFUSED`)**  
-   - Re-confirms the Bellon diagnostic finding (`outcome=REFUSED, why=vestel_virtual_remote_off`). The TV does not run the Vestel remote service.
+During network probes against the Royal RTV65D8100 TV at `192.168.1.46`:
+1. **TCP Port 56789 (Vestel Smart Center):** **ACCEPTS CONNECTIONS (`OPEN`)**  
+   - Earlier tests sent raw numeric byte arrays directly to the socket, which failed to elicit a reaction from the TV.
+   - Genuine Vestel Smart Center protocol communicates via an HTTP/1.1 daemon listening on this port, accepting XML payloads via HTTP POST.
+2. **TCP Port 9080 (Web Daemon / DIAL Candidate):** **HTTP 200 OK**  
+   - Port 9080 responds with standard HTTP 200, confirming an active web service on the Novatek NT671LA platform.
+   - Probed to discover whether it hosts device description XML, DIAL REST endpoints (`Application-URL`), or smart TV web portals.
+3. **TCP Port 80 & 8088:** **CONNECTION REFUSED (`ECONNREFUSED`)**  
+   - Closed on this TV chassis.
 4. **ICMP Ping Status:**  
-   - Many smart TV network stacks deliberately ignore ICMP Echo requests (ping) for security and power saving. A failed ping **does not** indicate the TV is offline.
+   - Smart TV network stacks often drop ICMP Echo requests for power saving or security. A failed ping does **not** indicate the TV is offline.
 
 ---
 
-## 2. Why XCast and Bellon Worked While Static Port Tests Failed
+## 2. Task A: Vestel Smart Center HTTP Specification
 
-This is the pivotal architectural insight:
-- **XCast (DLNA):** Did **not** connect to port 8088. Instead, XCast broadcast an **SSDP M-SEARCH query** over UDP `239.255.255.250:1900`. The TV responded with its dynamically assigned UPnP location URL (e.g. `http://192.168.1.38:49152/description.xml` or `http://192.168.1.38:7676/...`).
-- **Bellon (YouTube Launch):** Bellon targeted the **DIAL protocol** on TCP port `8008` (`POST /apps/YouTube`), an open standard designed by Netflix and Google for launching smart TV applications.
-- **Why Navigation Did Not Work in Either App:**
-  - **DLNA:** UPnP AV specifications explicitly define `RenderingControl` (Volume, Mute) and `AVTransport` (Play, Pause, Stop), but **omit system navigation** (D-Pad, Home, Back, Menu).
-  - **DIAL:** Exclusively manages application lifecycles (launching/closing apps like YouTube), but **does not provide directional remote keystrokes**.
+### Exact Request Format
+```http
+POST http://192.168.1.46:56789/apps/SmartCenter HTTP/1.1
+Host: 192.168.1.46:56789
+application_name: vestel smart center
+Content-Type: text/plain; charset=ISO-8859-1
+Content-Length: 53
+Connection: close
+
+<?xml version='1.0' ?><remote><key code='1016'/></remote>
+```
+
+### Hypothesized Key Codes (Vestel Smart Center)
+| Function | Key Code | Hypothesis Status |
+| :--- | :--- | :--- |
+| **Volume Up** | `1016` | Key hypothesis test |
+| **Volume Down** | `1017` | Key hypothesis test |
+| **Mute** | `1009` | Toggle mute |
+| **D-Pad Up** | `1012` | Directional navigation |
+| **D-Pad Down** | `1013` | Directional navigation |
+| **D-Pad Left** | `1014` | Directional navigation |
+| **D-Pad Right** | `1015` | Directional navigation |
+| **OK / Enter** | `1053` | Confirmation |
+| **Back** | `1022` | Navigation return |
+| **Home** | `1046` | Smart TV Launcher |
+
+### 4-Stage Verification Policy
+A command is only considered physically successful if stage 4 is confirmed:
+1. `TCP Connected` — Socket successfully opened within 3000ms.
+2. `HTTP Response Received` — Status code and response headers returned by the server.
+3. `HTTP Status Successful` — HTTP 200/204 response from `/apps/SmartCenter`.
+4. `User Confirmed TV Reacted` — Human visual/audible confirmation that the TV reacted.
 
 ---
 
-## 3. Evidence-Backed Port Audit Matrix
+## 3. Task B: Port 9080 Investigation Specification
+
+### Diagnostic Audit Steps
+1. **Root Audit (`GET /`):**
+   - Query `http://192.168.1.46:9080/`
+   - Record HTTP status, response headers (`Application-URL`, `Server`, `Location`), and a bounded (512-byte) body preview.
+2. **Candidate Path Probes:**
+   - `GET /description.xml` — Root UPnP device description.
+   - `GET /ssdp/device-desc.xml` — SSDP advertised descriptor.
+   - `GET /apps` — DIAL standard application root.
+   - `GET /dial` — Alternative DIAL root.
+   - `GET /dd.xml` — Compact UPnP device description.
+   - `GET /upnp` — UPnP service directory.
+3. **DIAL YouTube State Query (Read-Only):**
+   - If `Application-URL` header is discovered (e.g. `http://192.168.1.46:9080/apps/`):
+   - Issue read-only `GET <Application-URL>/YouTube` to inspect app state (`<state>running</state>` or `<state>stopped</state>`).
+   - **Safety Boundary:** Never issue blind `POST` app-launch requests until the service and endpoint have been verified.
+
+---
+
+## 4. Evidence-Backed Port Matrix
 
 | Port | Protocol / Service | Justification & Clue | Expected / Observed Outcome | Confidence Rating |
 | :--- | :--- | :--- | :--- | :--- |
-| **1900 (UDP)** | SSDP Multicast | Standard UPnP discovery used by XCast to find DLNA DMR | Responding on network | High Confidence |
-| **8008 (TCP)** | DIAL REST | Documented standard used by Bellon to launch YouTube | Candidate Open | High Confidence Match |
-| **49152 (TCP)** | UPnP Dynamic Port 1 | Standard IANA ephemeral port bound by Novatek/Linux DLNA daemons | Candidate Open | Investigative Match |
-| **49153 (TCP)** | UPnP Dynamic Port 2 | Secondary dynamic port for AVTransport / RenderingControl | Candidate Open | Investigative Match |
+| **56789 (TCP)** | Vestel Smart Center HTTP | Open port on 192.168.1.46 | **OPEN (Accepts TCP)** | Active Investigation |
+| **9080 (TCP)** | HTTP Web / DIAL Daemon | Returns HTTP 200 on 192.168.1.46 | **OPEN (HTTP 200)** | Active Investigation |
+| **1900 (UDP)** | SSDP Multicast | Standard UPnP discovery | Responding on network | High Confidence |
+| **8008 (TCP)** | DIAL REST | Documented standard used by Bellon | Candidate Open | High Confidence Match |
+| **49152 (TCP)** | UPnP Dynamic Port 1 | Standard ephemeral port bound by DMR | Candidate Open | Investigative Match |
+| **49153 (TCP)** | UPnP Dynamic Port 2 | Secondary dynamic port for AVTransport | Candidate Open | Investigative Match |
 | **7676 (TCP)** | UPnP Media Server | Commonly assigned to Smart TV DMR daemons | Candidate Open | Investigative Match |
 | **52235 (TCP)** | Alternate UPnP DMR | Embedded Linux smart TV DMR alternative port | Candidate Open | Investigative Match |
 | **80 (TCP)** | HTTP Web Server | Tested baseline HTTP web management | **Refused** | Confirmed Closed |
 | **8088 (TCP)** | Static UPnP DMR | Tested standard static DLNA port | **Refused** | Confirmed Closed |
-| **56789 (TCP)** | Vestel Smart Center | Clue from Bellon app diagnostic | **Refused** | Confirmed Incompatible |
-| **6466 (TCP)** | Google TV Pairing | Checks for certified Google TV Remote v2 pairing | Closed / Refused | Confirmed Incompatible |
+| **6466 (TCP)** | Google TV Pairing | Checks for certified Google TV Remote v2 | Closed / Refused | Confirmed Incompatible |
 | **6467 (TCP)** | Google TV Remote | Protobuf remote control channel | Closed / Refused | Confirmed Incompatible |
 
----
-
-## 4. SSDP Device Description Discovery Procedure
-
-The new safe **Diagnostics** screen in Royal Remote Lab executes the exact mechanism required to locate the TV's true endpoints:
-1. Acquires Android Wi-Fi `MulticastLock`.
-2. Sends bounded UDP M-SEARCH queries to `239.255.255.250:1900` for `ssdp:all`, `upnp:rootdevice`, `urn:schemas-upnp-org:device:MediaRenderer:1`, and `urn:dial-multiscreen-org:service:dial:1`.
-3. Dispatches a direct unicast M-SEARCH to `192.168.1.38:1900` to bypass potential router AP-isolation.
-4. When a `LOCATION: http://192.168.1.38:<port>/<path>.xml` header is received, the app safely issues an HTTP `GET` request and parses the XML.
-5. The parsed XML exposes:
-   - `<manufacturer>` (identifies the OEM platform)
-   - `<modelName>` and `<modelNumber>`
-   - `<friendlyName>`
-   - `<serviceList>`: lists the exact control URLs for `RenderingControl`, `AVTransport`, or `DIAL`.
-
-### Critical Protocol Boundary
-Even if SSDP successfully discovers a DLNA Media Renderer with full service URLs, **it must not be assumed to support remote navigation**. UPnP DLNA is designed for media rendering and volume, not remote D-Pad navigation.

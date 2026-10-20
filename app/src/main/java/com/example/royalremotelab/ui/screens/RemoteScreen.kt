@@ -29,7 +29,7 @@ fun RemoteScreen(
     val activeProtocol by repository.selectedProtocol.collectAsState()
     val isBusy by repository.isBusy.collectAsState()
     val latestResultPair by repository.latestResult.collectAsState()
-    val logs by repository.logs.collectAsState()
+    val vestelExchange by repository.latestVestelExchange.collectAsState()
 
     val scrollState = rememberScrollState()
 
@@ -39,7 +39,7 @@ fun RemoteScreen(
             .verticalScroll(scrollState)
             .padding(16.dp),
         horizontalAlignment = Alignment.CenterHorizontally,
-        verticalArrangement = Arrangement.spacedBy(16.dp)
+        verticalArrangement = Arrangement.spacedBy(14.dp)
     ) {
         // Active Protocol & Target Banner
         Card(
@@ -92,7 +92,83 @@ fun RemoteScreen(
             }
         }
 
-        // Latest Command Result & Feedback Prompt
+        // Task A: Live Vestel HTTP Inspector Card (When Vestel protocol is active or exchange present)
+        vestelExchange?.let { ex ->
+            Card(
+                modifier = Modifier.fillMaxWidth(),
+                colors = CardDefaults.cardColors(
+                    containerColor = if (ex.httpStatusCode in 200..299) Color(0xFF1B3A2B) else Color(0xFF2E2222)
+                ),
+                shape = RoundedCornerShape(12.dp)
+            ) {
+                Column(modifier = Modifier.padding(14.dp)) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Text(
+                            text = "TASK A: VESTEL HTTP BREAKDOWN",
+                            fontWeight = FontWeight.Bold,
+                            color = Color(0xFFFFD54F),
+                            fontSize = 11.sp
+                        )
+                        Surface(
+                            shape = RoundedCornerShape(4.dp),
+                            color = if (ex.httpStatusCode in 200..299) Color(0xFF2E7D32) else Color(0xFFC62828)
+                        ) {
+                            Text(
+                                text = if (ex.httpStatusCode > 0) "HTTP ${ex.httpStatusCode}" else "NO HTTP RESP",
+                                color = Color.White,
+                                modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp),
+                                fontSize = 10.sp,
+                                fontWeight = FontWeight.Bold
+                            )
+                        }
+                    }
+
+                    Spacer(modifier = Modifier.height(6.dp))
+                    Text(
+                        text = "Endpoint: POST ${ex.endpointUrl}",
+                        fontSize = 11.sp,
+                        color = Color.White,
+                        fontWeight = FontWeight.SemiBold
+                    )
+                    Text(
+                        text = "Headers: application_name=vestel smart center | Content-Type=text/plain; charset=ISO-8859-1",
+                        fontSize = 10.sp,
+                        color = Color.White.copy(alpha = 0.8f)
+                    )
+                    Text(
+                        text = "Payload: ${ex.requestBody}",
+                        fontSize = 10.sp,
+                        color = Color(0xFF81C784)
+                    )
+                    Text(
+                        text = "Stage Reached: ${ex.stage} in ${ex.durationMs}ms",
+                        fontSize = 11.sp,
+                        color = Color(0xFFFFCC80),
+                        fontWeight = FontWeight.Bold
+                    )
+                    if (ex.responseHeaders.isNotEmpty()) {
+                        Text(
+                            text = "Server Headers: ${ex.responseHeaders.keys.joinToString()}",
+                            fontSize = 10.sp,
+                            color = Color.White.copy(alpha = 0.7f)
+                        )
+                    }
+                    if (ex.responseBodyPreview.isNotBlank()) {
+                        Text(
+                            text = "Response Body: '${ex.responseBodyPreview}'",
+                            fontSize = 10.sp,
+                            color = Color.White.copy(alpha = 0.9f)
+                        )
+                    }
+                }
+            }
+        }
+
+        // Latest Command Result & Observation Prompt
         latestResultPair?.let { (command, result) ->
             Card(
                 modifier = Modifier.fillMaxWidth(),
@@ -114,7 +190,7 @@ fun RemoteScreen(
                         verticalAlignment = Alignment.CenterVertically
                     ) {
                         Text(
-                            text = "Last Action: ${command.label}",
+                            text = "Action: ${command.label}",
                             fontWeight = FontWeight.Bold,
                             color = Color.White,
                             style = MaterialTheme.typography.bodyLarge
@@ -139,7 +215,7 @@ fun RemoteScreen(
                         }
                     }
 
-                    Spacer(modifier = Modifier.height(6.dp))
+                    Spacer(modifier = Modifier.height(4.dp))
                     Text(
                         text = result.summary,
                         color = Color.White.copy(alpha = 0.9f),
@@ -147,7 +223,7 @@ fun RemoteScreen(
                     )
 
                     if (result.details.isNotBlank()) {
-                        Spacer(modifier = Modifier.height(4.dp))
+                        Spacer(modifier = Modifier.height(2.dp))
                         Text(
                             text = result.details,
                             color = Color.White.copy(alpha = 0.7f),
@@ -155,18 +231,18 @@ fun RemoteScreen(
                         )
                     }
 
-                    Spacer(modifier = Modifier.height(10.dp))
+                    Spacer(modifier = Modifier.height(8.dp))
                     HorizontalDivider(color = Color.White.copy(alpha = 0.2f))
-                    Spacer(modifier = Modifier.height(10.dp))
+                    Spacer(modifier = Modifier.height(8.dp))
 
                     Text(
-                        text = "Did the TV screen/sound physically react?",
+                        text = "Did the TV screen or audio physically react?",
                         fontWeight = FontWeight.SemiBold,
                         color = Color.White,
                         style = MaterialTheme.typography.bodySmall
                     )
 
-                    Spacer(modifier = Modifier.height(8.dp))
+                    Spacer(modifier = Modifier.height(6.dp))
                     Row(
                         modifier = Modifier.fillMaxWidth(),
                         horizontalArrangement = Arrangement.spacedBy(8.dp)
@@ -190,22 +266,21 @@ fun RemoteScreen(
             }
         }
 
-        // Remote Controls Section
+        // Navigation D-Pad Section
         Text(
-            text = "SYSTEM NAVIGATION",
+            text = "SYSTEM NAVIGATION (HYPOTHESIS KEY CODES)",
             style = MaterialTheme.typography.labelMedium,
             fontWeight = FontWeight.Bold,
             color = MaterialTheme.colorScheme.primary
         )
 
-        // D-Pad Control
         DPadControl(
             supportedCommands = activeProtocol.supportedCommands,
             isBusy = isBusy,
             onCommand = { cmd -> repository.sendCommand(cmd) }
         )
 
-        Spacer(modifier = Modifier.height(8.dp))
+        Spacer(modifier = Modifier.height(4.dp))
 
         // System Function Keys (Back, Home, Menu, Source)
         Row(
@@ -242,11 +317,11 @@ fun RemoteScreen(
             )
         }
 
-        Spacer(modifier = Modifier.height(8.dp))
+        Spacer(modifier = Modifier.height(4.dp))
 
         // Audio & Volume Section
         Text(
-            text = "AUDIO & VOLUME CONTROLS",
+            text = "VOLUME & AUDIO CONTROLS (VOL+ 1016, VOL- 1017, MUTE 1009)",
             style = MaterialTheme.typography.labelMedium,
             fontWeight = FontWeight.Bold,
             color = MaterialTheme.colorScheme.primary
@@ -279,7 +354,7 @@ fun RemoteScreen(
             )
         }
 
-        Spacer(modifier = Modifier.height(8.dp))
+        Spacer(modifier = Modifier.height(4.dp))
 
         // Media Playback Section
         Text(
@@ -336,7 +411,7 @@ fun DPadControl(
             .border(2.dp, MaterialTheme.colorScheme.outlineVariant, CircleShape),
         contentAlignment = Alignment.Center
     ) {
-        // UP
+        // UP (1012)
         Button(
             onClick = { onCommand(RemoteCommand.UP) },
             enabled = !isBusy && supportedCommands.contains(RemoteCommand.UP),
@@ -353,7 +428,7 @@ fun DPadControl(
             Text("▲", fontSize = 20.sp, fontWeight = FontWeight.Bold)
         }
 
-        // DOWN
+        // DOWN (1013)
         Button(
             onClick = { onCommand(RemoteCommand.DOWN) },
             enabled = !isBusy && supportedCommands.contains(RemoteCommand.DOWN),
@@ -370,7 +445,7 @@ fun DPadControl(
             Text("▼", fontSize = 20.sp, fontWeight = FontWeight.Bold)
         }
 
-        // LEFT
+        // LEFT (1014)
         Button(
             onClick = { onCommand(RemoteCommand.LEFT) },
             enabled = !isBusy && supportedCommands.contains(RemoteCommand.LEFT),
@@ -387,7 +462,7 @@ fun DPadControl(
             Text("◀", fontSize = 20.sp, fontWeight = FontWeight.Bold)
         }
 
-        // RIGHT
+        // RIGHT (1015)
         Button(
             onClick = { onCommand(RemoteCommand.RIGHT) },
             enabled = !isBusy && supportedCommands.contains(RemoteCommand.RIGHT),
@@ -404,7 +479,7 @@ fun DPadControl(
             Text("▶", fontSize = 20.sp, fontWeight = FontWeight.Bold)
         }
 
-        // CENTER OK
+        // CENTER OK (1053)
         Button(
             onClick = { onCommand(RemoteCommand.OK) },
             enabled = !isBusy && supportedCommands.contains(RemoteCommand.OK),

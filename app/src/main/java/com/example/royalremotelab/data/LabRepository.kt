@@ -15,9 +15,13 @@ import com.example.royalremotelab.model.UserFeedback
 import com.example.royalremotelab.network.DeviceDescriptionParser
 import com.example.royalremotelab.network.HostReachabilityChecker
 import com.example.royalremotelab.network.NetworkUtils
+import com.example.royalremotelab.network.Port9080AuditSummary
+import com.example.royalremotelab.network.Port9080Investigator
 import com.example.royalremotelab.network.SsdpDiscoveryManager
 import com.example.royalremotelab.protocols.ProtocolRegistry
 import com.example.royalremotelab.protocols.TvProtocol
+import com.example.royalremotelab.protocols.VestelHttpExchange
+import com.example.royalremotelab.protocols.VestelProtocol
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -31,7 +35,8 @@ import java.util.Locale
 
 /**
  * Single source of truth managing TV connection configuration, active protocol,
- * test logs, asynchronous protocol diagnostics/commands, and safe network discovery.
+ * test logs, asynchronous protocol diagnostics/commands, safe network discovery,
+ * and dedicated Task A (Vestel HTTP) & Task B (Port 9080) audits.
  */
 class LabRepository {
 
@@ -40,7 +45,7 @@ class LabRepository {
     private val _connectionConfig = MutableStateFlow(ConnectionConfig())
     val connectionConfig: StateFlow<ConnectionConfig> = _connectionConfig.asStateFlow()
 
-    private val _selectedProtocol = MutableStateFlow<TvProtocol>(ProtocolRegistry.dlnaProtocol)
+    private val _selectedProtocol = MutableStateFlow<TvProtocol>(ProtocolRegistry.vestelProtocol)
     val selectedProtocol: StateFlow<TvProtocol> = _selectedProtocol.asStateFlow()
 
     private val _logs = MutableStateFlow<List<TestLogEntry>>(emptyList())
@@ -55,8 +60,19 @@ class LabRepository {
     private val _isBusy = MutableStateFlow(false)
     val isBusy: StateFlow<Boolean> = _isBusy.asStateFlow()
 
-    private val _statusNotice = MutableStateFlow<String?>("Ready. Select a protocol or run safe diagnostics.")
+    private val _statusNotice = MutableStateFlow<String?>("Ready. Test Vestel HTTP on port 56789 or Port 9080.")
     val statusNotice: StateFlow<String?> = _statusNotice.asStateFlow()
+
+    // --- Task A: Vestel HTTP Exchange State ---
+    private val _latestVestelExchange = MutableStateFlow<VestelHttpExchange?>(null)
+    val latestVestelExchange: StateFlow<VestelHttpExchange?> = _latestVestelExchange.asStateFlow()
+
+    // --- Task B: Port 9080 Investigation State ---
+    private val _port9080Summary = MutableStateFlow<Port9080AuditSummary?>(null)
+    val port9080Summary: StateFlow<Port9080AuditSummary?> = _port9080Summary.asStateFlow()
+
+    private val _isPort9080Running = MutableStateFlow(false)
+    val isPort9080Running: StateFlow<Boolean> = _isPort9080Running.asStateFlow()
 
     // --- Focused Network Diagnostics State ---
     private val _reachabilityResult = MutableStateFlow<HostReachabilityResult?>(null)
@@ -85,7 +101,7 @@ class LabRepository {
         if (config.isDemoMode && _selectedProtocol.value.id != ProtocolRegistry.demoProtocol.id) {
             _selectedProtocol.value = ProtocolRegistry.demoProtocol
         } else if (!config.isDemoMode && _selectedProtocol.value.id == ProtocolRegistry.demoProtocol.id) {
-            _selectedProtocol.value = ProtocolRegistry.dlnaProtocol
+            _selectedProtocol.value = ProtocolRegistry.vestelProtocol
         }
     }
 
@@ -111,6 +127,133 @@ class LabRepository {
     }
 
     /**
+     * Task A: Sends a Vestel Smart Center command via HTTP POST to /apps/SmartCenter.
+     * Guaranteed off-main-thread execution.
+     */
+    fun sendVestelCommand(command: RemoteCommand) {
+        if (_isBusy.value) return
+        val host = _connectionConfig.value.host
+        val timeoutMs = _connectionConfig.value.timeoutMs
+        val isDemo = _connectionConfig.value.isDemoMode
+
+        _isBusy.value = true
+        _statusNotice.value = "Sending Vestel HTTP POST for ${command.label} to $host:56789..."
+        logDiagnostic("Initiating Vestel HTTP POST for ${command.label} on $host:56789/apps/SmartCenter...")
+
+        scope.launch(Dispatchers.IO) {
+            try {
+                if (isDemo) {
+                    val demoExchange = VestelHttpExchange(
+                        endpointUrl = "http://$host:56789/apps/SmartCenter",
+                        requestHeaders = mapOf(
+                            "application_name" to "vestel smart center",
+                            "Content-Type" to "text/plain; charset=ISO-8859-1"
+                        ),
+                        requestBody = "<?xml version='1.0' ?><remote><key code='1016'/></remote>",
+                        httpStatusCode = 200,
+                        responseHeaders = mapOf("Server" to listOf("Vestel-HTTP/1.1")),
+                        responseBodyPreview = "OK",
+                        durationMs = 15L,
+                        stage = "[SIMULATED] HTTP Status Successful (200 OK)",
+                        exceptionDetail = null
+                    )
+                    _latestVestelExchange.value = demoExchange
+                    val result = CommandResult.simulated(command)
+                    _latestResult.value = Pair(command, result)
+                    logDiagnostic("Demo Vestel command simulated.")
+                } else {
+                    val vestel = ProtocolRegistry.vestelProtocol
+                    val result = vestel.sendCommand(command, _connectionConfig.value)
+                    _latestResult.value = Pair(command, result)
+                    _latestVestelExchange.value = vestel.latestExchange
+
+                    val ex = vestel.latestExchange
+                    logDiagnostic("Vestel HTTP Result: ${ex?.stage} (HTTP ${ex?.httpStatusCode ?: -1}) in ${ex?.durationMs ?: 0}ms.")
+
+                    val logEntry = TestLogEntry(
+                        protocolId = "vestel_http",
+                        protocolName = "Vestel Smart Center (HTTP)",
+                        targetHost = host,
+                        actionName = "${command.label} (code ${vestel.mapCommandToVestelKeyCode(command)})",
+                        result = result
+                    )
+                    appendLog(logEntry)
+                }
+            } catch (e: Exception) {
+                logDiagnostic("Vestel HTTP error: ${e.message}")
+            } finally {
+                _isBusy.value = false
+            }
+        }
+    }
+
+    /**
+     * Task B: Runs dedicated investigation of TCP port 9080.
+     * Probes GET /, candidate descriptor paths, and read-only DIAL app state.
+     */
+    fun runPort9080Investigation() {
+        if (_isPort9080Running.value) return
+        val host = _connectionConfig.value.host
+        val timeoutMs = _connectionConfig.value.timeoutMs
+
+        _isPort9080Running.value = true
+        logDiagnostic("Starting Port 9080 investigation on http://$host:9080/ ...")
+
+        scope.launch(Dispatchers.IO) {
+            try {
+                if (_connectionConfig.value.isDemoMode) {
+                    val demoSummary = Port9080AuditSummary(
+                        host = host,
+                        rootResult = com.example.royalremotelab.network.Port9080PathResult(
+                            label = "Root Endpoint (GET /)",
+                            path = "/",
+                            url = "http://$host:9080/",
+                            statusCode = 200,
+                            headers = mapOf("Application-URL" to listOf("http://$host:8008/apps/")),
+                            bodyPreview = "<html><body>Royal Smart TV Portal</body></html>",
+                            durationMs = 12L,
+                            isSuccess = true,
+                            applicationUrl = "http://$host:8008/apps/"
+                        ),
+                        probeResults = emptyList(),
+                        advertisedApplicationUrl = "http://$host:8008/apps/",
+                        youtubeQueryStatus = "GET http://$host:8008/apps/YouTube returned HTTP 200 (App state: stopped)",
+                        technicalVerdict = "[SIMULATED] Port 9080 returned HTTP 200 and advertised Application-URL."
+                    )
+                    _port9080Summary.value = demoSummary
+                    logDiagnostic("Demo Port 9080 investigation completed.")
+                } else {
+                    val summary = Port9080Investigator.runFullInvestigation(
+                        host = host,
+                        timeoutMs = timeoutMs,
+                        onProgress = { msg -> logDiagnostic(msg) }
+                    )
+                    _port9080Summary.value = summary
+                    logDiagnostic("Port 9080 investigation finished: ${summary.technicalVerdict}")
+
+                    appendLog(
+                        TestLogEntry(
+                            protocolId = "port_9080_audit",
+                            protocolName = "Port 9080 Inspector",
+                            targetHost = host,
+                            actionName = "GET / & DIAL Audit",
+                            result = CommandResult(
+                                status = if (summary.rootResult.isSuccess) ResultStatus.NETWORK_RESPONSE else ResultStatus.REJECTED,
+                                summary = summary.technicalVerdict,
+                                details = "Root: HTTP ${summary.rootResult.statusCode} | App-URL: ${summary.advertisedApplicationUrl ?: "None"} | YouTube: ${summary.youtubeQueryStatus ?: "Unchecked"}"
+                            )
+                        )
+                    )
+                }
+            } catch (e: Exception) {
+                logDiagnostic("Port 9080 error: ${e.message}")
+            } finally {
+                _isPort9080Running.value = false
+            }
+        }
+    }
+
+    /**
      * Executes safe host reachability audit (ICMP + TCP fallback with ping limitation explanation).
      */
     fun runHostReachabilityAudit() {
@@ -126,7 +269,7 @@ class LabRepository {
                         host = host,
                         isIcmpReachable = true,
                         icmpLatencyMs = 8L,
-                        openFallbackPort = 8008,
+                        openFallbackPort = 56789,
                         fallbackLatencyMs = 12L,
                         explanation = "[SIMULATED] Reachability check simulated in Demo Mode."
                     )
@@ -179,7 +322,7 @@ class LabRepository {
             try {
                 if (_connectionConfig.value.isDemoMode) {
                     val demoDevice = DiscoveredUpnpDevice(
-                        locationUrl = "http://$host:8008/ssdp/device-desc.xml",
+                        locationUrl = "http://$host:9080/description.xml",
                         serverHeader = "Linux/4.9.118 UPnP/1.0 DLNADOC/1.50",
                         searchTarget = "urn:schemas-upnp-org:device:MediaRenderer:1",
                         usn = "uuid:royal-rtv65d8100-demo::upnp:rootdevice",
@@ -201,7 +344,6 @@ class LabRepository {
                         onLog = { msg -> logDiagnostic(msg) }
                     )
 
-                    // Retrieve description XML for each discovered device safely
                     val hydratedDevices = devices.map { device ->
                         logDiagnostic("Retrieving XML description from ${device.locationUrl}...")
                         try {
@@ -265,10 +407,10 @@ class LabRepository {
                             port = def.port,
                             serviceName = def.serviceName,
                             documentedJustification = def.justification,
-                            status = if (def.port == 8008 || def.port == 49152) ResultStatus.SUCCESS else ResultStatus.REJECTED,
+                            status = if (def.port == 56789 || def.port == 9080) ResultStatus.SUCCESS else ResultStatus.REJECTED,
                             latencyMs = 10L,
                             rawDetails = "[SIMULATED] Demo port probe",
-                            confidence = if (def.port == 8008) DiagnosticConfidence.HIGH_CONFIDENCE_MATCH else DiagnosticConfidence.UNCONFIRMED
+                            confidence = if (def.port == 56789) DiagnosticConfidence.INVESTIGATIVE_MATCH else DiagnosticConfidence.UNCONFIRMED
                         )
                     }
                     _portAuditRecords.value = demoRecords
@@ -309,8 +451,10 @@ class LabRepository {
         _reachabilityResult.value = null
         _discoveredDevices.value = emptyList()
         _portAuditRecords.value = emptyList()
+        _port9080Summary.value = null
+        _latestVestelExchange.value = null
         _diagnosticLogs.value = emptyList()
-        _statusNotice.value = "Network diagnostics cleared."
+        _statusNotice.value = "Diagnostics cleared."
     }
 
     fun runDiagnostics() {
@@ -351,6 +495,10 @@ class LabRepository {
     fun sendCommand(command: RemoteCommand) {
         if (_isBusy.value) return
         val currentProtocol = _selectedProtocol.value
+        if (currentProtocol.id == "vestel_smartcenter") {
+            sendVestelCommand(command)
+            return
+        }
         val currentConfig = _connectionConfig.value
 
         _isBusy.value = true
@@ -430,7 +578,7 @@ class LabRepository {
         builder.appendLine("=======================================================")
         builder.appendLine("ROYAL REMOTE LAB - PROTOCOL INVESTIGATION REPORT")
         builder.appendLine("Date/Time: $now")
-        builder.appendLine("TV Model: Royal RTV65D8100 (Novatek NT671LA / LF1V680)")
+        builder.appendLine("TV Model: Royal RTV65D8100 (Software: v8-nt671la-lf1v680.000)")
         builder.appendLine("Target Host: $hostDisplay")
         builder.appendLine("Active Protocol: ${_selectedProtocol.value.name}")
         builder.appendLine("Mode: ${if (_connectionConfig.value.isDemoMode) "DEMO / SIMULATED" else "PHYSICAL NETWORK"}")
@@ -443,7 +591,45 @@ class LabRepository {
         builder.appendLine("- Unconfirmed (Look at TV screen): $unconfirmed")
         builder.appendLine()
 
-        // Include Network Diagnostics if available
+        // Task A: Latest Vestel HTTP Exchange Detail
+        val vex = _latestVestelExchange.value
+        if (vex != null) {
+            builder.appendLine("TASK A: VESTEL SMART CENTER HTTP EXCHANGE:")
+            val endpointDisplay = if (includeIp) vex.endpointUrl else vex.endpointUrl.replace(Regex("""\b\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}\b"""), "[IP_REDACTED]")
+            builder.appendLine("- Method & Endpoint: POST $endpointDisplay")
+            builder.appendLine("- Request Headers:")
+            vex.requestHeaders.forEach { (k, v) -> builder.appendLine("    $k: $v") }
+            builder.appendLine("- Request Payload: ${vex.requestBody}")
+            builder.appendLine("- HTTP Status Code: ${vex.httpStatusCode}")
+            builder.appendLine("- Stage Reached: ${vex.stage}")
+            builder.appendLine("- Response Headers:")
+            vex.responseHeaders.forEach { (k, v) -> builder.appendLine("    $k: ${v.joinToString()}") }
+            builder.appendLine("- Response Body Preview: ${if (vex.responseBodyPreview.isBlank()) "[Empty]" else vex.responseBodyPreview}")
+            builder.appendLine("- Elapsed Time: ${vex.durationMs}ms")
+            if (vex.exceptionDetail != null) {
+                builder.appendLine("- Exception: ${vex.exceptionDetail}")
+            }
+            builder.appendLine()
+        }
+
+        // Task B: Port 9080 Investigation Detail
+        val p90 = _port9080Summary.value
+        if (p90 != null) {
+            builder.appendLine("TASK B: PORT 9080 INVESTIGATION SUMMARY:")
+            builder.appendLine("- Technical Verdict: ${p90.technicalVerdict}")
+            builder.appendLine("- Advertised Application-URL: ${p90.advertisedApplicationUrl ?: "None detected"}")
+            builder.appendLine("- YouTube Read-Only Query: ${p90.youtubeQueryStatus ?: "Not performed"}")
+            builder.appendLine("- Root (GET /) Status: HTTP ${p90.rootResult.statusCode} in ${p90.rootResult.durationMs}ms")
+            builder.appendLine("- Root Headers: ${p90.rootResult.headers.keys.joinToString()}")
+            builder.appendLine("- Root Body Preview: ${p90.rootResult.bodyPreview.take(256)}")
+            builder.appendLine("- Probed Paths:")
+            p90.probeResults.forEach { pr ->
+                builder.appendLine("    * ${pr.path} (${pr.label}) -> HTTP ${pr.statusCode} (${pr.durationMs}ms)")
+            }
+            builder.appendLine()
+        }
+
+        // Host Reachability Audit
         val reach = _reachabilityResult.value
         if (reach != null) {
             builder.appendLine("HOST REACHABILITY AUDIT:")
@@ -454,33 +640,17 @@ class LabRepository {
             builder.appendLine()
         }
 
+        // SSDP Discovered Devices
         val devices = _discoveredDevices.value
         if (devices.isNotEmpty()) {
             builder.appendLine("SSDP / UPNP DISCOVERED DEVICES (${devices.size}):")
             devices.forEachIndexed { i, dev ->
-                val devHost = if (includeIp) dev.targetIp else "[IP_REDACTED]"
                 builder.appendLine("Device #${i + 1}:")
                 builder.appendLine("  - Friendly Name: ${dev.friendlyName ?: "Unknown"}")
                 builder.appendLine("  - Manufacturer: ${dev.manufacturer ?: "Unknown"}")
-                builder.appendLine("  - Model Name: ${dev.modelName ?: "Unknown"}")
-                builder.appendLine("  - Model Number: ${dev.modelNumber ?: "Unknown"}")
+                builder.appendLine("  - Model: ${dev.modelName ?: "Unknown"} ${dev.modelNumber ?: ""}")
                 builder.appendLine("  - Device Type: ${dev.deviceType ?: "Unknown"}")
                 builder.appendLine("  - Location URL: ${if (includeIp) dev.locationUrl else dev.locationUrl.replace(Regex("""\b\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}\b"""), "[IP_REDACTED]")}")
-                builder.appendLine("  - Services Discovered (${dev.services.size}):")
-                dev.services.forEach { s ->
-                    builder.appendLine("      * ${s.serviceType} (ID: ${s.serviceId}) -> Control: ${if (includeIp) s.controlUrl else "[IP_REDACTED]"}")
-                }
-            }
-            builder.appendLine()
-        }
-
-        val portProbes = _portAuditRecords.value
-        if (portProbes.isNotEmpty()) {
-            builder.appendLine("TARGETED EVIDENCE-BACKED PORT PROBES:")
-            portProbes.forEach { p ->
-                builder.appendLine("- Port ${p.port} (${p.serviceName}): Status=${p.status.name} (${p.latencyMs}ms) | Confidence=${p.confidence.label}")
-                builder.appendLine("    Justification: ${p.documentedJustification}")
-                builder.appendLine("    Details: ${p.rawDetails}")
             }
             builder.appendLine()
         }
@@ -495,8 +665,8 @@ class LabRepository {
         }
         builder.appendLine()
         builder.appendLine("HONEST ASSESSMENT NOTICE:")
-        builder.appendLine("Network acknowledgments or open ports alone do not prove TV system control.")
-        builder.appendLine("Only physical screen reaction confirms navigation functionality.")
+        builder.appendLine("TCP connections or HTTP 200 acknowledgments alone DO NOT prove the TV reacted.")
+        builder.appendLine("Only physical user observation confirms command execution.")
         builder.appendLine("=======================================================")
         return builder.toString()
     }

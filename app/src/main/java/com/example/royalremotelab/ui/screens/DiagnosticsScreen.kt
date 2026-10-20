@@ -24,6 +24,8 @@ import com.example.royalremotelab.model.DiagnosticConfidence
 import com.example.royalremotelab.model.DiscoveredUpnpDevice
 import com.example.royalremotelab.model.PortProbeRecord
 import com.example.royalremotelab.model.ResultStatus
+import com.example.royalremotelab.network.Port9080AuditSummary
+import com.example.royalremotelab.network.Port9080PathResult
 
 @Composable
 fun DiagnosticsScreen(
@@ -34,6 +36,8 @@ fun DiagnosticsScreen(
     val config by repository.connectionConfig.collectAsState()
     val reachability by repository.reachabilityResult.collectAsState()
     val isReachabilityRunning by repository.isReachabilityRunning.collectAsState()
+    val port9080Summary by repository.port9080Summary.collectAsState()
+    val isPort9080Running by repository.isPort9080Running.collectAsState()
     val devices by repository.discoveredDevices.collectAsState()
     val isDiscoveryRunning by repository.isDiscoveryRunning.collectAsState()
     val portRecords by repository.portAuditRecords.collectAsState()
@@ -67,7 +71,7 @@ fun DiagnosticsScreen(
                 )
                 Spacer(modifier = Modifier.height(4.dp))
                 Text(
-                    text = "Investigates target TV at ${config.host}. Identifies open services using SSDP multicast discovery and evidence-backed port probes without guessing payloads or scanning arbitrary ranges.",
+                    text = "Investigates target TV at ${config.host}. Empirically tests Vestel HTTP (Port 56789), Port 9080 HTTP 200 service, and SSDP UPnP endpoints without guessing arbitrary payloads.",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSecondaryContainer.copy(alpha = 0.85f)
                 )
@@ -161,7 +165,7 @@ fun DiagnosticsScreen(
             }
         }
 
-        // --- 2. SSDP / UPnP Multicast Discovery ---
+        // --- 2. Task B: Port 9080 Investigation & DIAL Audit ---
         Card(
             modifier = Modifier.fillMaxWidth(),
             colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant),
@@ -169,7 +173,48 @@ fun DiagnosticsScreen(
         ) {
             Column(modifier = Modifier.padding(16.dp)) {
                 Text(
-                    text = "2. SSDP / UPNP MULTICAST DISCOVERY",
+                    text = "2. TASK B: PORT 9080 INVESTIGATION (HTTP 200)",
+                    style = MaterialTheme.typography.labelMedium,
+                    fontWeight = FontWeight.Bold,
+                    color = MaterialTheme.colorScheme.primary
+                )
+                Spacer(modifier = Modifier.height(4.dp))
+                Text(
+                    text = "Port 9080 was discovered returning HTTP 200. Probes GET /, checks response headers for advertised Application-URL, and performs read-only app state query.",
+                    style = MaterialTheme.typography.bodySmall
+                )
+                Spacer(modifier = Modifier.height(12.dp))
+
+                Button(
+                    onClick = { repository.runPort9080Investigation() },
+                    enabled = !isPort9080Running && config.isValid,
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    if (isPort9080Running) {
+                        CircularProgressIndicator(modifier = Modifier.size(16.dp), color = Color.White, strokeWidth = 2.dp)
+                        Spacer(modifier = Modifier.width(8.dp))
+                        Text("Probing Port 9080 Endpoints...")
+                    } else {
+                        Text("🔬 Investigate Port 9080 (GET / & DIAL Audit)")
+                    }
+                }
+
+                port9080Summary?.let { p90 ->
+                    Spacer(modifier = Modifier.height(12.dp))
+                    Port9080SummaryCard(summary = p90)
+                }
+            }
+        }
+
+        // --- 3. SSDP / UPnP Multicast Discovery ---
+        Card(
+            modifier = Modifier.fillMaxWidth(),
+            colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant),
+            shape = RoundedCornerShape(12.dp)
+        ) {
+            Column(modifier = Modifier.padding(16.dp)) {
+                Text(
+                    text = "3. SSDP / UPNP MULTICAST DISCOVERY",
                     style = MaterialTheme.typography.labelMedium,
                     fontWeight = FontWeight.Bold,
                     color = MaterialTheme.colorScheme.primary
@@ -206,25 +251,11 @@ fun DiagnosticsScreen(
                     devices.forEach { dev ->
                         DiscoveredDeviceCard(device = dev)
                     }
-                } else if (!isDiscoveryRunning && reachability != null) {
-                    Spacer(modifier = Modifier.height(8.dp))
-                    Surface(
-                        shape = RoundedCornerShape(8.dp),
-                        color = MaterialTheme.colorScheme.surface,
-                        modifier = Modifier.fillMaxWidth()
-                    ) {
-                        Text(
-                            text = "No SSDP multicast packets received yet. If your Wi-Fi router isolates multicast traffic (AP Isolation), ensure both phone and TV are on 2.4 GHz without guest isolation.",
-                            style = MaterialTheme.typography.bodySmall,
-                            modifier = Modifier.padding(10.dp),
-                            color = MaterialTheme.colorScheme.onSurfaceVariant
-                        )
-                    }
                 }
             }
         }
 
-        // --- 3. Evidence-Backed Targeted Port Audit ---
+        // --- 4. Evidence-Backed Targeted Port Audit ---
         Card(
             modifier = Modifier.fillMaxWidth(),
             colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant),
@@ -232,14 +263,14 @@ fun DiagnosticsScreen(
         ) {
             Column(modifier = Modifier.padding(16.dp)) {
                 Text(
-                    text = "3. TARGETED PORT AUDIT (EVIDENCE-BACKED)",
+                    text = "4. TARGETED PORT AUDIT (EVIDENCE-BACKED)",
                     style = MaterialTheme.typography.labelMedium,
                     fontWeight = FontWeight.Bold,
                     color = MaterialTheme.colorScheme.primary
                 )
                 Spacer(modifier = Modifier.height(4.dp))
                 Text(
-                    text = "Probes only candidate ports with documented smart TV justifications (DIAL 8008, dynamic UPnP 49152/49153, 7676, 52235, Google TV 6466, Vestel 56789).",
+                    text = "Probes only candidate ports with documented justifications (Port 56789, Port 9080, DIAL 8008, dynamic UPnP 49152/49153, 7676, 52235, Google TV 6466).",
                     style = MaterialTheme.typography.bodySmall
                 )
                 Spacer(modifier = Modifier.height(12.dp))
@@ -268,7 +299,7 @@ fun DiagnosticsScreen(
             }
         }
 
-        // --- 4. Live Diagnostic Console & Export ---
+        // --- 5. Live Diagnostic Console & Export ---
         Card(
             modifier = Modifier.fillMaxWidth(),
             colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant),
@@ -281,7 +312,7 @@ fun DiagnosticsScreen(
                     verticalAlignment = Alignment.CenterVertically
                 ) {
                     Text(
-                        text = "4. ACTIVITY CONSOLE & EXPORT",
+                        text = "5. ACTIVITY CONSOLE & EXPORT",
                         style = MaterialTheme.typography.labelMedium,
                         fontWeight = FontWeight.Bold,
                         color = MaterialTheme.colorScheme.primary
@@ -298,7 +329,7 @@ fun DiagnosticsScreen(
 
                 if (consoleLogs.isEmpty()) {
                     Text(
-                        text = "No diagnostic events yet. Run reachability, SSDP discovery, or port audit above.",
+                        text = "No diagnostic events yet. Run reachability, Port 9080 audit, or SSDP discovery above.",
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.outline
                     )
@@ -361,6 +392,111 @@ fun DiagnosticsScreen(
                 }
             }
         )
+    }
+}
+
+@Composable
+fun Port9080SummaryCard(summary: Port9080AuditSummary) {
+    Surface(
+        shape = RoundedCornerShape(8.dp),
+        color = MaterialTheme.colorScheme.surface,
+        modifier = Modifier
+            .fillMaxWidth()
+            .border(1.dp, MaterialTheme.colorScheme.outlineVariant, RoundedCornerShape(8.dp))
+    ) {
+        Column(modifier = Modifier.padding(12.dp)) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Text(
+                    text = "Root: GET http://${summary.host}:9080/",
+                    fontWeight = FontWeight.Bold,
+                    fontSize = 12.sp
+                )
+                Surface(
+                    shape = RoundedCornerShape(4.dp),
+                    color = if (summary.rootResult.statusCode in 200..299) Color(0xFF2E7D32) else Color(0xFFC62828)
+                ) {
+                    Text(
+                        text = "HTTP ${summary.rootResult.statusCode} (${summary.rootResult.durationMs}ms)",
+                        color = Color.White,
+                        fontSize = 10.sp,
+                        fontWeight = FontWeight.Bold,
+                        modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
+                    )
+                }
+            }
+
+            Spacer(modifier = Modifier.height(4.dp))
+            Text(
+                text = "Verdict: ${summary.technicalVerdict}",
+                fontSize = 11.sp,
+                fontWeight = FontWeight.SemiBold,
+                color = MaterialTheme.colorScheme.primary
+            )
+
+            if (summary.advertisedApplicationUrl != null) {
+                Spacer(modifier = Modifier.height(4.dp))
+                Surface(
+                    shape = RoundedCornerShape(4.dp),
+                    color = Color(0xFF1B3A2B),
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Text(
+                        text = "🎯 Advertised Application-URL: ${summary.advertisedApplicationUrl}",
+                        fontSize = 11.sp,
+                        color = Color(0xFFA5D6A7),
+                        fontWeight = FontWeight.Bold,
+                        modifier = Modifier.padding(6.dp)
+                    )
+                }
+            }
+
+            if (summary.youtubeQueryStatus != null) {
+                Spacer(modifier = Modifier.height(4.dp))
+                Text(
+                    text = "YouTube State Query: ${summary.youtubeQueryStatus}",
+                    fontSize = 10.sp,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+
+            if (summary.rootResult.bodyPreview.isNotBlank()) {
+                Spacer(modifier = Modifier.height(6.dp))
+                Text(
+                    text = "Response Preview: '${summary.rootResult.bodyPreview.take(180)}...'",
+                    fontSize = 10.sp,
+                    color = MaterialTheme.colorScheme.outline
+                )
+            }
+
+            if (summary.probeResults.isNotEmpty()) {
+                Spacer(modifier = Modifier.height(8.dp))
+                Text(
+                    text = "Labelled Path Probes:",
+                    fontSize = 11.sp,
+                    fontWeight = FontWeight.SemiBold
+                )
+                summary.probeResults.forEach { pr ->
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(vertical = 2.dp),
+                        horizontalArrangement = Arrangement.SpaceBetween
+                    ) {
+                        Text("${pr.label} (${pr.path}):", fontSize = 10.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        Text(
+                            text = if (pr.statusCode > 0) "HTTP ${pr.statusCode} (${pr.durationMs}ms)" else "Failed",
+                            fontSize = 10.sp,
+                            fontWeight = FontWeight.Bold,
+                            color = if (pr.statusCode in 200..299) Color(0xFF2E7D32) else Color(0xFFC62828)
+                        )
+                    }
+                }
+            }
+        }
     }
 }
 
