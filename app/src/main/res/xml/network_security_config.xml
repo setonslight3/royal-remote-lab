@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="utf-8"?>
+<network-security-config>
+    <!--
+      Cleartext HTTP is enabled deliberately for local-network communication with smart TVs
+      and DLNA/UPnP services, which do not use TLS on home networks.
+      This app communicates exclusively with user-specified LAN IP addresses
+      and does not transmit telemetry, analytics, or credentials to any remote server.
+    -->
+    <base-config cleartextTrafficPermitted="true">
+        <trust-anchors>
+            <certificates src="system" />
+        </trust-anchors>
+    </base-config>
+</network-security-config>
