@@ -14,32 +14,37 @@
 
 Automated unit tests were executed using Gradle:
 ```powershell
-.\gradlew.bat test
+$env:PATH = $env:PATH.Replace('"', ''); .\gradlew.bat test
 ```
 
 ### Test Execution Summary
-- **Total Test Suites Executed:** 4
-- **Total Unit Tests Executed:** 12
+- **Total Test Suites Executed:** 5
+- **Total Unit Tests Executed:** 16
 - **Failures:** 0
 - **Errors:** 0
 - **Skipped:** 0
-- **Outcome:** **100% PASSED** (`BUILD SUCCESSFUL in 19s`)
+- **Outcome:** **100% PASSED** (`BUILD SUCCESSFUL in 20s`)
 
 ### Detailed Test Suites
-1. **`ConnectionConfigTest`** (4 tests):
+1. **`NetworkDiagnosticsTest`** (4 tests):
+   - `parseSsdpResponse_extractsHeadersCorrectly`: Validated parsing of SSDP notification headers (`LOCATION`, `SERVER`, `ST`, `USN`).
+   - `parseDeviceDescription_extractsMetadataAndServices`: Validated XML DOM parsing of `<friendlyName>`, `<manufacturer>`, `<modelName>`, `<modelNumber>`, and `<serviceList>`.
+   - `resolveRelativeUrl_correctlyCombinesBaseAndRelative`: Validated relative URL resolution against the base location URL.
+   - `evidenceBackedPorts_allHaveJustifications`: Verified that all candidate ports have documented justifications and valid confidence ratings.
+2. **`ConnectionConfigTest`** (4 tests):
    - `defaultHost_isValid`: Validated default IP `192.168.1.38`.
-   - `validIpv4Addresses_passValidation`: Validated standard RFC 1918 IPv4 addresses.
-   - `invalidIpv4Addresses_failValidation`: Rejected invalid IPs, octet overruns, empty strings.
+   - `validIpv4Addresses_passValidation`: Validated RFC 1918 IPv4 addresses.
+   - `invalidIpv4Addresses_failValidation`: Rejected invalid IPs and octet overruns.
    - `timeoutRange_validation`: Enforced 500ms – 30,000ms bounds.
-2. **`ProtocolRegistryAndCommandTest`** (4 tests):
+3. **`ProtocolRegistryAndCommandTest`** (4 tests):
    - `protocolRegistry_hasAllCandidates`: Verified registration of all 6 protocol adapters.
    - `protocolRegistry_defaultSelection`: Confirmed default adapter switches appropriately between normal and Demo mode.
    - `dlnaProtocol_commandSupportDistinction`: Verified DLNA supports Volume/Mute/Media and returns `UNSUPPORTED` for D-Pad navigation.
    - `demoMode_honestSimulationTag`: Verified all simulated commands and diagnostics contain the `[SIMULATED]` tag.
-3. **`ExportReportAndLogTest`** (2 tests):
+4. **`ExportReportAndLogTest`** (2 tests):
    - `testLogEntry_ipScrubbingDefault`: Verified target IP is scrubbed to `[IP_REDACTED]` by default.
    - `labRepository_exportReportContainsStructure`: Verified report header, TV specs, metrics, and honest assessment notice.
-4. **`MainScreenViewModelTest`** (2 tests):
+5. **`MainScreenViewModelTest`** (2 tests):
    - Verified initial state and flow emission.
 
 ---
@@ -48,7 +53,7 @@ Automated unit tests were executed using Gradle:
 
 The native Android APK was compiled directly in this environment:
 ```powershell
-.\gradlew.bat assembleDebug
+$env:PATH = $env:PATH.Replace('"', ''); .\gradlew.bat assembleDebug
 ```
 
 - **Build Result:** **BUILD SUCCESSFUL in 14s**
@@ -57,74 +62,38 @@ The native Android APK was compiled directly in this environment:
   - Full Path: `C:\Users\Setons\.gemini\antigravity\scratch\royal-remote-lab\royal-remote-lab-debug.apk`
   - Build Path: `C:\Users\Setons\.gemini\antigravity\scratch\royal-remote-lab\app\build\outputs\apk\debug\app-debug.apk`
   - File Size: `12,384,951 bytes (~12.38 MB)`
-  - Timestamp: `2026-10-20 17:57:09 UTC`
 
 ---
 
-## 3. Demo Mode Verification (Offline, No TV Required)
+## 3. Physical TV Diagnostics Checklist (For the User)
 
-Demo Mode was verified in software:
-1. **Activation:** Toggle "Offline Demo Mode" switch in the Connection tab or select `Demo Mode` in Protocol Lab.
-2. **Visual Indicators:**
-   - Top Bar displays prominent orange `DEMO MODE` badge.
-   - Remote screen displays `DEMO MODE (OFFLINE) - [SIMULATED]`.
-3. **Behavior:**
-   - All D-Pad, Volume, System, and Media buttons are interactive.
-   - Latency is simulated (~12 ms).
-   - Test log records entries with `[DEMO]` prefix.
-   - No network packets or socket connections are initiated.
+Follow this step-by-step checklist to test the new safe network diagnostics against your Royal TV at `192.168.1.38`:
 
----
+### Step 1: Install Updated APK
+- [ ] Transfer `royal-remote-lab-debug.apk` to your Android phone.
+- [ ] Tap the file and select **Install / Update**.
+- [ ] Launch **Royal Remote Lab** (it will open directly to the **Diagnostics** tab).
 
-## 4. Physical TV Testing Checklist (For the User)
+### Step 2: Audit Host Reachability
+- [ ] Ensure phone and TV are on the **same 2.4 GHz Wi-Fi** network.
+- [ ] Verify the target IP is `192.168.1.38`.
+- [ ] Tap **📡 Audit Host Reachability**.
+  - *Observe:* Check the technical analysis. If ICMP ping is dropped, remember that many smart TV stacks deliberately ignore ping packets for security and power saving while streaming or listening on UPnP.
 
-When you are ready to test against the physical Royal TV, follow this exact step-by-step checklist:
+### Step 3: Run SSDP / UPnP Discovery
+- [ ] In the **Diagnostics** tab, tap **🔍 Run SSDP Discovery (UDP 1900)**.
+  - The app will acquire Android's `MulticastLock`, dispatch M-SEARCH queries, and attempt a direct unicast probe to `192.168.1.38:1900`.
+  - *Observe:* When the TV responds, review the **Discovered Device Card**:
+    - Does it reveal the true manufacturer (e.g. Novatek/Changhong/Royal)?
+    - Does it reveal the true Location URL (e.g. `http://192.168.1.38:49152/...` or `http://192.168.1.38:8008/...`)?
+    - Which services are listed (e.g. `RenderingControl`, `AVTransport`, `DIAL`)?
 
-### Step 1: Network & TV Setup
-- [ ] Power ON the Royal RTV65D8100 TV (wake from standby).
-- [ ] Connect your Android phone to the **same 2.4 GHz Wi-Fi** network as the TV.
-- [ ] Verify the TV's current IP address in TV:
-  - Open TV **Settings** → **Network & Internet**.
-  - Note the IP address (confirm if it is still `192.168.1.38`).
-- [ ] Confirm TV **Digital Media Renderer** is enabled in TV settings.
+### Step 4: Run Targeted Port Audit
+- [ ] In the **Diagnostics** tab, tap **🛡️ Run Evidence-Backed Port Audit**.
+  - The app checks ports 8008 (DIAL), 49152, 49153, 7676, 52235, 80, 8088, 56789, 6466, 6467.
+  - *Observe:* Does Port 8008 or Port 49152 show **OPEN**?
 
-### Step 2: Install App on Android Phone
-- [ ] Copy `royal-remote-lab-debug.apk` to your Android phone.
-- [ ] Open the file on your phone and tap **Install**.
-- [ ] Launch **Royal Remote Lab**.
-
-### Step 3: Run Reachability & Port Audit
-- [ ] Open the **Connection** tab.
-- [ ] Enter the TV IP address (`192.168.1.38`).
-- [ ] Tap **📡 Test TV Host Reachability**.
-  - *Observe:* Does the TV accept socket connection?
-- [ ] Open the **Protocol Lab** tab.
-- [ ] Select **Targeted Smart TV Port Audit** and tap **▶ Run Safe Diagnostics**.
-  - *Observe:* Check the port audit table to see which ports (8088, 8008, 80, 56789) are reported OPEN.
-
-### Step 4: Test Volume & Media Control (DLNA)
-- [ ] In **Protocol Lab**, select **DLNA / UPnP Media Renderer**.
-- [ ] Switch to the **Remote** tab.
-- [ ] Tap **Vol +** and **Vol -**.
-  - *Observe the TV:* Does the volume bar appear on screen or does audio level change?
-  - Tap `[✅ TV Reacted]` or `[❌ No Reaction]` immediately under the result card.
-
-### Step 5: Test DIAL App Launch
-- [ ] In **Protocol Lab**, select **DIAL REST / Novatek App Launch**.
-- [ ] Switch to the **Remote** tab.
-- [ ] Tap **Play** (requests DIAL YouTube launch).
-  - *Observe the TV:* Does the YouTube smart app open on screen?
-  - Tap `[✅ TV Reacted]` or `[❌ No Reaction]`.
-
-### Step 6: Test Navigation & Vestel Port 56789
-- [ ] In **Protocol Lab**, select **Vestel Smart Center (TCP 56789)**.
-- [ ] Tap **▶ Run Safe Diagnostics**.
-  - *Observe:* Note whether port 56789 returns `Connection Refused` or responds.
-- [ ] Switch to the **Remote** tab and tap **Up / Down / OK**.
-  - *Observe the TV:* Does the cursor move? Record feedback honestly.
-
-### Step 7: Export Investigation Report
-- [ ] Open the **Logs** tab.
+### Step 5: Export Diagnostic Report
 - [ ] Tap **📋 Export Report**.
-- [ ] Toggle IP address inclusion on or off (off by default).
-- [ ] Tap **Copy to Clipboard** and paste it to save your findings.
+- [ ] Choose whether to include the TV IP address (scrubbed by default).
+- [ ] Tap **Copy to Clipboard** and paste the findings to review next steps!

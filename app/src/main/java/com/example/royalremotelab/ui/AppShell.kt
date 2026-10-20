@@ -13,13 +13,15 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.example.royalremotelab.data.LabRepository
 import com.example.royalremotelab.ui.screens.ConnectionScreen
+import com.example.royalremotelab.ui.screens.DiagnosticsScreen
 import com.example.royalremotelab.ui.screens.LogsScreen
 import com.example.royalremotelab.ui.screens.ProtocolLabScreen
 import com.example.royalremotelab.ui.screens.RemoteScreen
 
 enum class AppTab(val label: String, val iconText: String) {
     REMOTE("Remote", "📱"),
-    PROTOCOL_LAB("Protocol Lab", "🔬"),
+    PROTOCOL_LAB("Lab", "🔬"),
+    DIAGNOSTICS("Diagnostics", "🔍"),
     CONNECTION("Connection", "📡"),
     LOGS("Logs", "📋")
 }
@@ -30,10 +32,9 @@ fun AppShell(
     repository: LabRepository,
     modifier: Modifier = Modifier
 ) {
-    var currentTab by remember { mutableStateOf(AppTab.REMOTE) }
+    var currentTab by remember { mutableStateOf(AppTab.DIAGNOSTICS) } // Default to Diagnostics as requested!
 
     val config by repository.connectionConfig.collectAsState()
-    val activeProtocol by repository.selectedProtocol.collectAsState()
     val statusNotice by repository.statusNotice.collectAsState()
     val logs by repository.logs.collectAsState()
 
@@ -50,7 +51,7 @@ fun AppShell(
                                 fontWeight = FontWeight.Bold
                             )
                             Text(
-                                text = "Smart TV Protocol Investigator",
+                                text = "Smart TV Protocol & Network Investigator",
                                 style = MaterialTheme.typography.labelSmall,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant
                             )
@@ -115,16 +116,16 @@ fun AppShell(
                     NavigationBarItem(
                         selected = currentTab == tab,
                         onClick = { currentTab = tab },
-                        label = { Text(tab.label, fontSize = 11.sp) },
+                        label = { Text(tab.label, fontSize = 10.sp, maxLines = 1) },
                         icon = {
                             if (tab == AppTab.LOGS && logs.isNotEmpty()) {
                                 BadgedBox(badge = {
                                     Badge { Text(logs.size.toString()) }
                                 }) {
-                                    Text(tab.iconText, fontSize = 18.sp)
+                                    Text(tab.iconText, fontSize = 17.sp)
                                 }
                             } else {
-                                Text(tab.iconText, fontSize = 18.sp)
+                                Text(tab.iconText, fontSize = 17.sp)
                             }
                         }
                     )
@@ -136,6 +137,7 @@ fun AppShell(
             when (currentTab) {
                 AppTab.REMOTE -> RemoteScreen(repository = repository)
                 AppTab.PROTOCOL_LAB -> ProtocolLabScreen(repository = repository)
+                AppTab.DIAGNOSTICS -> DiagnosticsScreen(repository = repository)
                 AppTab.CONNECTION -> ConnectionScreen(repository = repository)
                 AppTab.LOGS -> LogsScreen(repository = repository)
             }
